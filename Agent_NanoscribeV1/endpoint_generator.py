@@ -54,7 +54,7 @@ def load_print_parameters(param_file: Path) -> Dict[str, float]:
     with open(param_file, 'r') as f:
         for line in f:
             line = line.strip()
-            if ':' in line:
+            if ':' in line and not line.startswith("#"):
                 key, value = line.split(':', 1)
                 params[key.strip()] = float(value.strip())
     return params

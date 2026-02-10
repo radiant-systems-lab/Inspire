@@ -28,9 +28,20 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TypedDict, List, Dict
-from openai import OpenAI
+from typing import TypedDict, List, Dict, Callable
+#from openai import OpenAI
 from langgraph.graph import StateGraph, END
+from langchain.messages import AIMessage
+from langchain.chat_models import init_chat_model
+from langchain_core.runnables import RunnableConfig
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+
+import langfuse
+from langfuse import Langfuse, propagate_attributes, get_client, observe
+from langfuse.langchain import CallbackHandler
+from langfuse.media import LangfuseMedia
+
 
 
 # ==============================================================================
@@ -39,32 +50,33 @@ from langgraph.graph import StateGraph, END
 # This section handles API key loading and client initialization.
 # The API key is loaded from a file to avoid hardcoding credentials.
 
-def find_api_key_file(start_dir: Path, max_levels: int = 5) -> Path:
+def find_env_file(start_dir: Path, max_levels: int = 5) -> Path:
     """
-    Search for API.txt in Docs folder by traversing up the directory tree.
+    Search for env.json in Docs folder by traversing up the directory tree.
     
     This allows the script to be run from any subdirectory while still
-    finding the API key stored at a known location relative to the project root.
+    finding the API keys stored at a known location relative to the project root.
     
     Args:
         start_dir: Directory to start searching from
         max_levels: Maximum number of parent levels to search
     
     Returns:
-        Path to API.txt file
+        Path to env.json file
     
     Raises:
-        ValueError: If API.txt is not found within max_levels
+        ValueError: If env.json is not found within max_levels
     """
     current_dir = start_dir
     
     for _ in range(max_levels):
         docs_dir = current_dir / "Docs"
-        api_file = docs_dir / "API.txt"
+        env_file = docs_dir / "env.json"
         
-        if api_file.exists():
-            print(f"[CONFIG] Found API key at: {api_file}")
-            return api_file
+        if env_file.exists():
+            print(f"[CONFIG] Found API key at: {env_file}")
+            with open(env_file, 'r') as file:
+                return json.load(file)
         
         parent = current_dir.parent
         if parent == current_dir:
@@ -72,17 +84,33 @@ def find_api_key_file(start_dir: Path, max_levels: int = 5) -> Path:
         current_dir = parent
     
     raise ValueError(
-        f"API key file (Docs/API.txt) not found within {max_levels} parent directories of {start_dir}\n"
-        f"Please ensure Docs/API.txt exists in a parent directory of the repository."
+        f"API key file (Docs/env.json) not found within {max_levels} parent directories of {start_dir}\n"
+        f"Please ensure Docs/env.json exists in a parent directory of the repository."
     )
+
 
 
 # Initialize paths and API client
 SCRIPT_DIR = Path(__file__).parent.resolve()
-API_FILE = find_api_key_file(SCRIPT_DIR)
-OPENAI_API_KEY = API_FILE.read_text(encoding="utf-8").strip()
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-client = OpenAI(api_key=OPENAI_API_KEY)
+ENV_DICT = find_env_file(SCRIPT_DIR)
+os.environ.update(ENV_DICT)
+# Potential behavior #2:
+#for k, v in ENV_DICT.items(): # Update environment variables from file, but not if they were already set
+#  if not (v in {"",None} or k in os.environ.keys()):
+#    os.environ[k] = v
+
+# Langfuse usage check
+USE_LANGFUSE_CLIENT = os.environ.get("USE_LANGFUSE_CLIENT", "true").lower() == "true"
+
+# Initialize client model
+if os.environ.get("INSPIRE_GEOMETRY_AGENT_MODEL", None) is None:
+  raise ValueError("INSPIRE_GEOMETRY_AGENT_MODEL not set!")
+additional_args = {
+  "base_url": os.environ.get("INSPIRE_GEOMETRY_AGENT_MODEL_BASE_URL", None),
+  "reasoning": False
+}
+valid_args = {k:v for k,v in additional_args.items() if not (v is None or v == "")}
+client = init_chat_model(model = os.environ["INSPIRE_GEOMETRY_AGENT_MODEL"], **valid_args)
 
 
 # ==============================================================================
@@ -271,6 +299,124 @@ UNIT_CELL_SCHEMA = {
     "additionalProperties": False
 }
 
+# Note: This can work with raw prompting if the model does not make mistakes, but is above the depth and number
+# of fields that Gemini supports for constrained JSON mode.
+UNIT_CELL_SCHEMA_GEMINI = {
+    "title": "UnitCellSchema",
+    "type": "object",
+    "properties": {
+        "job_name": {
+            "type": "string",
+            "description": "Short descriptive name for this job (e.g., 'nailhead_array')"
+        },
+        "unit_cell": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "Reference location for the unit cell (e.g., 'origin')"
+                },
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string", # REQUIRED with enum
+                                "enum": ["cylinder", "box", "sphere", "cone", "pyramid"],
+                                "description": "Geometric primitive type"
+                            },
+                            "center": {
+                                "type": "array",
+                                "items": {"type": "number"},
+                                "description": "[x, y, z] center coordinates in micrometers"
+                            },
+                            "dimensions": {
+                                # FIX: Gemini does not allow empty objects or additionalProperties: True.
+                                # Using a string to capture dynamic JSON data is the standard workaround.
+                                "type": "string",
+                                "description": "Dimensions as a JSON string (e.g., '{\"radius\": 5, \"height\": 10}')"
+                            },
+                            "construction": {
+                                "type": "object",
+                                "properties": {
+                                    "method": {
+                                        "type": "string", # REQUIRED with enum
+                                        "enum": ["stacked_boxes", "stacked_cylinders"],
+                                        "description": "stacked_boxes for pyramids, stacked_cylinders for cones"
+                                    },
+                                    "layers": {
+                                        "type": "integer",
+                                        "description": "Number of layers"
+                                    },
+                                    "top_width_um": {"type": "number"},
+                                    "top_diameter_um": {"type": "number"}
+                                },
+                                "required": ["method", "layers"]
+                            }
+                        },
+                        "required": ["type", "center", "dimensions"]
+                    }
+                }
+            },
+            "required": ["location", "components"]
+        },
+        "global_info": {
+            "type": "object",
+            "properties": {
+                "pattern_type": {"type": "string"},
+                "repetitions": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer"},
+                        "y": {"type": "integer"},
+                        "z": {"type": "integer"}
+                    },
+                    "required": ["x", "y", "z"]
+                },
+                "spacing": {
+                    "type": "object",
+                    "properties": {
+                        "x_um": {"type": "number"},
+                        "y_um": {"type": "number"},
+                        "z_um": {"type": "number"},
+                        "pattern_description": {"type": "string"}
+                    },
+                    "required": ["x_um", "y_um", "z_um", "pattern_description"]
+                },
+                "total_dimensions": {"type": "string"},
+                "pattern_modifiers": {
+                    "type": "object",
+                    "properties": {
+                        "row_offset": {
+                            "type": "object",
+                            "properties": {
+                                "axis": {
+                                    "type": "string", # REQUIRED with enum
+                                    "enum": ["x"]
+                                },
+                                "offset_um": {"type": "number"},
+                                "apply_to": {
+                                    "type": "string", # REQUIRED with enum
+                                    "enum": ["odd_rows", "even_rows"]
+                                }
+                            },
+                            "required": ["axis", "offset_um", "apply_to"]
+                        },
+                        "rotation": {"type": "number"},
+                        "flip": {
+                            "type": "string", # REQUIRED with enum
+                            "enum": ["x", "y", "xy", "none"]
+                        }
+                    }
+                }
+            },
+            "required": ["pattern_type", "repetitions", "spacing", "total_dimensions"]
+        },
+    },
+    "required": ["job_name", "unit_cell", "global_info"]
+}
+
 
 # ==============================================================================
 # SYSTEM PROMPT
@@ -330,6 +476,14 @@ FABRICATION-AWARE RULES (CRITICAL):
 
 Output valid JSON matching the provided schema."""
 
+def apply_all_recursive_dict(input_dict: dict, search_key: str, fn: Callable[[object], object]):
+  """ Modifies input_dict in-place, applying the value for matching keys of search_key """
+  for key in input_dict.keys():
+    if key == search_key:
+      input_dict[key] = fn(input_dict[key])
+    if isinstance(input_dict[key], dict):
+      apply_all_recursive_dict(input_dict[key], search_key, fn)
+  
 
 # ==============================================================================
 # GRAPH NODES
@@ -349,48 +503,73 @@ def identify_unit_cell(state: AgentState) -> AgentState:
         
     Returns:
         Updated state with result and token_usage
+
+    Note: it is slightly messy because due to the size of the schema, it breaks out of the LangChain way of
+    passing / retreving schema to support certain models.
     """
     print(f"[ANALYZING] Prompt: {state['prompt'][:60]}...")
-    
-    # Print parameters for debugging
+    active_schema = UNIT_CELL_SCHEMA_GEMINI if isinstance(client, ChatGoogleGenerativeAI) else UNIT_CELL_SCHEMA
+
     print("[PARAMETERS]")
-    print(f"  Model: gpt-4o-mini")
-    print(f"  Response format: JSON with strict schema")
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": state["prompt"]}
-        ],
-        response_format={
+    print(f"  Model: {getattr(client, 'model_name', 'Unknown')}")
+    print(f"  Response format: JSON with provider-specific schema")
+
+    # Provide special cases to bypass schema validation / manipulation by Langchain.
+    # This is because LangChain will manipulate and thus inflate the large schema beyond the allowed size constraints.
+    structured_llm = None
+    if isinstance(client, ChatGoogleGenerativeAI):
+        structured_llm = client.bind(
+            generation_config = {
+                    "response_mime_type": "application/json",
+                    "response_schema": active_schema  # Passed as raw dict to the SDK
+                } 
+        )
+    elif isinstance(client, ChatOpenAI):
+        structured_llm = client.bind(
+            response_format={
             "type": "json_schema",
-            "json_schema": {
-                "name": "unit_cell_response",
-                "strict": False,
-                "schema": UNIT_CELL_SCHEMA
+            "json_schema": schema,
             }
-        }
-    )
+        )
+    else:
+        structured_llm = client.with_structured_output(active_schema, include_raw = True, strict = False, method = "json_schema")
+
+    response_data = structured_llm.invoke([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": state["prompt"]}
+    ])
+
+    # Find JSON and raw messages
+    result = raw_message = None
+    if hasattr(response_data, "keys") and "parsed" in response_data.keys():
+        result = response_data["parsed"]
+    elif isinstance(response_data, AIMessage):
+        if isinstance(response_data.content, str):
+            raw_message = response_data.content
+            result = json.loads(response_data.content)
+        else:
+            result = response_data.content
+    if raw_message == None and "raw" in response_data.keys():
+        raw_message = response_data["raw"]
+
+    # Fix string workaround for "dimensions" field - may throw JSONDecodeError
+    apply_all_recursive_dict(result, "dimensions", lambda value: json.loads(d) if isinstance(d, str) else d)
     
-    result = json.loads(response.choices[0].message.content)
-    
-    state["result"] = result
+
+    usage = getattr(raw_message, "usage_metadata", {})
     state["token_usage"] = {
-        "prompt_tokens": response.usage.prompt_tokens,
-        "completion_tokens": response.usage.completion_tokens,
-        "total_tokens": response.usage.total_tokens
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0)
     }
+    state["result"] = result
     
-    print(f"[SUCCESS] Unit cell identified: {result['job_name']}")
-    print(f"  Components: {len(result['unit_cell']['components'])}")
-    print(f"  Array size: {result['global_info']['repetitions']}")
+    #print(f"[SUCCESS] Unit cell identified: {result['job_name']}")
     print(f"  Tokens: {state['token_usage']['total_tokens']}")
     
     return state
 
-
-def save_output(state: AgentState) -> AgentState:
+def save_output(state: AgentState, config: RunnableConfig) -> AgentState:
     """
     Save JSON output and trigger downstream pipeline.
     
@@ -405,6 +584,8 @@ def save_output(state: AgentState) -> AgentState:
     Returns:
         Updated state with output_path
     """
+    langfuse_client = get_client() if USE_LANGFUSE_CLIENT else None
+    
     job_name = state["result"]["job_name"]
     category = state.get("category", "")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -425,7 +606,7 @@ def save_output(state: AgentState) -> AgentState:
             "metadata": {
                 "category": category,
                 "timestamp": timestamp,
-                "model": "gpt-4o-mini",
+                "model": os.environ["INSPIRE_GEOMETRY_AGENT_MODEL"],
                 "tokens": state["token_usage"]
             },
             "prompt": state["prompt"],
@@ -479,19 +660,62 @@ def save_output(state: AgentState) -> AgentState:
             json.dump(endpoint_data, f, indent=2)
         print(f"[PIPELINE] Generated Endpoints: {endpoint_file}")
         
-        # Generate GWL
-        gwl_dir = output_dir / "GWL"
-        gwl_params = gwl_serializer.load_gwl_parameters(param_file)
-        gwl_files = gwl_serializer.generate_gwl_files(endpoint_data, gwl_params, gwl_dir)
-        
-        master_gwl_path = gwl_dir / f"{job_name}_master.gwl"
-        gwl_serializer.generate_master_gwl(gwl_files, gwl_params, master_gwl_path)
-        print(f"[PIPELINE] Generated GWL: {gwl_dir}")
+        # # Generate GWL
+        # with langfuse_client.span(name="generate_gwl") as span:
+        #     gwl_dir = output_dir / "GWL"
+        #     gwl_params = gwl_serializer.load_gwl_parameters(param_file)
+        #     gwl_files = gwl_serializer.generate_gwl_files(endpoint_data, gwl_params, gwl_dir)
+        #     master_gwl_path = gwl_dir / f"{job_name}_master.gwl"
+        #     gwl_serializer.generate_master_gwl(gwl_files, gwl_params, master_gwl_path)
+        #     print(f"[PIPELINE] Generated GWL: {gwl_dir}")
+    
+            
+        #     # # Attach master GWL to Langfuse trace
+        #     # if USE_LANGFUSE_CLIENT:
+        #     #     with open(master_gwl_path, 'rb') as file:
+        #     #         file_data = file.read()
+        #     #         span.update(
+        #     #             output = {
+        #     #                 os.path.basename(master_gwl_path): {
+        #     #                     "data": file_data,
+        #     #                     "content_type": "text/plain"
+        #     #                 }
+        #     #             }
+        #     #         )
+            
+        #     # # Attach GWL files to Langfuse trace
+        #     # if USE_LANGFUSE_CLIENT:
+        #     #     for filename in os.listdir(gwl_dir):
+        #     #         file_data = None
+        #     #         with open(Path(gwl_dir, filename), 'rb') as file:
+        #     #             file_data = file.read()
+        #     #         span.update(
+        #     #             output = {
+        #     #                 filename: {
+        #     #                     "data": file_data,
+        #     #                     "content_type": "text/plain"
+        #     #                 }
+        #     #             }
+        #     #         )
+        #     #    print(f"[PIPELINE] Uploaded GWL Files to Langfuse")
         
         # Generate Renders
-        render_dir = output_dir / "Renders"
-        render_result = render_generator.generate_all_renders(endpoint_file, param_file, render_dir)
-        print(f"[PIPELINE] Generated Renders: {render_dir}")
+        with langfuse_client.start_as_current_observation(name="generate_renders", as_type="span") as span:
+            render_dir = output_dir / "Renders"
+            render_result = render_generator.generate_all_renders(endpoint_file, param_file, render_dir)
+            print(f"[PIPELINE] Generated Renders: {render_dir}")
+    
+            
+            # Attach Renders to Langfuse trace
+            if USE_LANGFUSE_CLIENT:
+                langfuse_media = []
+                for filename in os.listdir(render_dir):
+                    with open(Path(render_dir, filename), 'rb') as file:
+                        langfuse_media.append(LangfuseMedia(content_bytes = file.read(), content_type = "image/png"))
+                span.update(
+                    output = {"images": langfuse_media}
+                )
+                print(f"[PIPELINE] Uploaded Renders to Langfuse")
         
     except Exception as e:
         print(f"[PIPELINE] ERROR: {e}")
@@ -569,7 +793,7 @@ def parse_prompts(prompt_file: Path) -> List[Dict[str, str]]:
     return prompts
 
 
-def run_evaluation(prompt_data: Dict[str, str], graph) -> Dict:
+def run_evaluation(prompt_data: Dict[str, str], graph, langfuse_client = None, callback_handler = None, langfuse_metadata = None) -> Dict:
     """
     Run single prompt evaluation.
     
@@ -581,7 +805,7 @@ def run_evaluation(prompt_data: Dict[str, str], graph) -> Dict:
         Result dict with category, job_name, output_path, tokens
     """
     category = prompt_data["category"]
-    prompt = prompt_data["prompt"]
+    prompt = prompt_data["prompt"].strip()
     
     print(f"\n[EVAL: {category}]")
     print(f"Prompt: {prompt[:80]}...")
@@ -593,8 +817,16 @@ def run_evaluation(prompt_data: Dict[str, str], graph) -> Dict:
         "output_path": "",
         "token_usage": {}
     }
-    
-    final_state = graph.invoke(initial_state)
+
+    # Langfuse integration
+    config = None
+    if USE_LANGFUSE_CLIENT and callback_handler is not None:
+        config={
+            "callbacks": [callback_handler],
+        }
+        if langfuse_metadata is not None:
+            config["metadata"] = langfuse_metadata
+    final_state = graph.invoke(initial_state, config = config)
     
     result = {
         "category": category,
@@ -616,8 +848,34 @@ def run_evaluation(prompt_data: Dict[str, str], graph) -> Dict:
 
 if __name__ == "__main__":
     import sys
+
+
+    # Initialize LangFuse client
+    langfuse_client = get_client()
+    callback_handler = None
+    if USE_LANGFUSE_CLIENT and langfuse_client.auth_check():
+        print("Langfuse client is authenticated and ready!")
+        callback_handler = CallbackHandler()
+    else:
+        langfuse_client = None
+        USE_LANGFUSE_CLIENT = False
+        print("LangFuse authentication failed. Please check your credentials and host. Disabling LangFuse reporting.")
     
     batch_mode = "--batch" in sys.argv
+    
+    session_id = datetime.now().strftime(("batch_mode" if batch_mode else "single_prompt") + "_%Y-%m-%d_%H:%M:%S")
+    langfuse_metadata = config = None
+    if USE_LANGFUSE_CLIENT:
+        langfuse_metadata = {
+            "langfuse_user_id": "test_user",
+            "langfuse_session_id": session_id,
+            "langfuse_tags": [initial_state["category"], "batch_mode" if batch_mode else "single_prompt"]
+        }
+        config={
+            "callbacks": [callback_handler],
+            "metadata": langfuse_metadata
+        }
+        config["metadata"] = langfuse_metadata
     
     if batch_mode:
         print("=" * 70)
@@ -633,9 +891,10 @@ if __name__ == "__main__":
         graph = build_graph()
         
         results = []
+        session_id = datetime.now().strftime("batch_run_%Y-%m-%d_%H:%M:%S")
         for prompt_data in prompts:
             try:
-                result = run_evaluation(prompt_data, graph)
+                result = run_evaluation(prompt_data, graph, langfuse_client = langfuse_client, callback_handler = callback_handler, langfuse_metadata = langfuse_metadata)
                 results.append(result)
             except Exception as e:
                 print(f"  ERROR: {e}")
@@ -678,7 +937,9 @@ if __name__ == "__main__":
             "token_usage": {}
         }
         
-        final_state = graph.invoke(initial_state)
+        final_state = graph.invoke(initial_state, config=config)
+
+        
         
         # Summary
         print("\n" + "=" * 60)

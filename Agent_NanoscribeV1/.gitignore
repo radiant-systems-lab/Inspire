@@ -1,0 +1,7 @@
+__pycache__
+Docs
+outputs
+.ipynb_checkpoints
+.DS_Store
+._*
+PrintParameters-checkpoint.txt

@@ -32,24 +32,37 @@ from schemas.validation import v2_structural_gate
 # CONFIG
 # ======================================================
 
-def find_api_key_file(start_dir: Path, max_levels: int = 5) -> Path:
-    """Dynamically search for API.txt in Docs folder."""
+def find_env_file(start_dir: Path, max_levels: int = 5) -> Path:
     current_dir = start_dir
     for _ in range(max_levels):
         docs_dir = current_dir / "Docs"
-        api_file = docs_dir / "API.txt"
-        if api_file.exists():
-            return api_file
+        env_file = docs_dir / "env.json"
+        if env_file.exists():
+            print(f"[CONFIG] Found API key at: {api_file}")
+            return json.load(env_file)
         parent = current_dir.parent
         if parent == current_dir:
             break
         current_dir = parent
-    raise ValueError(f"API key file not found within {max_levels} parent directories")
+    raise ValueError(
+        f"API key file (Docs/env.json) not found within {max_levels} parent directories of {start_dir}\n"
+        f"Please ensure Docs/env.json exists in a parent directory of the repository."
+    )
 
-API_FILE = find_api_key_file(SCRIPT_DIR)
-OPENAI_API_KEY = API_FILE.read_text(encoding="utf-8").strip()
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Initialize environment variables
+SCRIPT_DIR = Path(__file__).parent.resolve()
+ENV_DICT = find_api_key_file(SCRIPT_DIR)
+os.environ.update(ENV_DICT)
+
+# Initialize client model
+if os.environ.get("INSPIRE_GEOMETRY_AGENT_MODEL", None) is None:
+  raise ValueError("INSPIRE_GEOMETRY_AGENT_MODEL not set!")
+additional_args = {
+  "base_url": os.environ.get("INSPIRE_GEOMETRY_AGENT_MODEL_BASE_URL", None)
+}
+valid_args = **{k:v for k,v in additional_args.items() if not (v is None or v == "")}
+client = init_chat_model(model = os.environ["INSPIRE_GEOMETRY_AGENT_MODEL"], **valid_args)
+
 
 # ======================================================
 # V2 DESIGN VARIANT
