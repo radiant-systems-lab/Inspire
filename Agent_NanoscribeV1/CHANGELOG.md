@@ -18,3 +18,12 @@
 ### Removed
 - Legacy V1 scripts and "Unit Cell" specific logic.
 - References to `global_info` and `unit_cell` fields in JSON schemas.
+
+---
+
+## [Langfuse Integration And Model Switching] - 2026-02-10
+### Changed
+- **API Key Storage Change**: `find_api_key_file` is now `find_env_file`, and searches for `Docs/env.json` instead.
+- **Langchain-based Model Initialization**: `init_chat_model` is used to initialize various models based on the environment variables defined in `Docs/env.json`
+- **Custom Gemini Schema**: A new custom prompt schema definition exists for Gemini models. Other models will use `client.with_structured_output()` based on the OpenAI schema definition.
+- **Langfuse Integration**: Given successful authentication, Langfuse will be used to record LangGraph traces and custom uploads 
