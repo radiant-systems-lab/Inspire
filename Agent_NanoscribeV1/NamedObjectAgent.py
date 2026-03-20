@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import TypedDict, List, Dict
 from openai import OpenAI
 from langgraph.graph import StateGraph, END
+from langchain_core.prompts import PromptTemplate
+from qdrant_client import QdrantClient
+import traceback
 
 from schemas import (
     validate_object_library,
@@ -30,6 +33,7 @@ from schemas import (
     v2_structural_gate
 )
 from reduction_engine import reduce_assembly, validate_reduced_output
+from segment_analysis import analyze_segments
 
 
 # ======================================================
@@ -61,8 +65,20 @@ def find_api_key_file(start_dir: Path, max_levels: int = 5) -> Path:
 SCRIPT_DIR = Path(__file__).parent.resolve()
 API_FILE = find_api_key_file(SCRIPT_DIR)
 OPENAI_API_KEY = API_FILE.read_text(encoding="utf-8").strip()
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-client = OpenAI(api_key=OPENAI_API_KEY)
+if not os.environ["OPENAI_API_KEY"]: # Take precidence over the API.txt file with an environment variable
+  os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+OPENAI_EMBEDDINGS_MODEL = os.environ.get("OPENAI_EMBEDDINGS_MODEL", "text-embedding-3-small") # Note: this MUST be the same as the vector database was encoded in
+OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+client = OpenAI(api_key=OPENAI_API_KEY, base_url = OPENAI_API_BASE)
+
+# Initialize QdrantClient and embeddings model
+qclient = None
+try:
+    qclient = QdrantClient(path = './Dataset/qdrant_dataset')
+except Exception as e:
+    print("[INITIALIZATION ERROR] Unable to intialize embeddings store. Disabling and using default example.")
+    print(traceback.format_exc())
 
 
 # ======================================================
@@ -234,15 +250,15 @@ OBJECT TYPES:
 
 2. "composite" objects: Reference other objects with repetition
    - uses: name of referenced object
-   - repeat: {x, y, z} repetition counts
-   - spacing_um: {x, y, z} spacing between repetitions
+   - repeat: {{x, y, z}} repetition counts
+   - spacing_um: {{x, y, z}} spacing between repetitions
    - May NOT contain primitives directly
 
 ASSEMBLY:
 - Defines WHERE objects are placed (not how they're built)
 - type: "grid" for regular patterns
-- grid: {x, y} number of cells
-- spacing_um: {x, y} spacing between cells
+- grid: {{x, y}} number of cells
+- spacing_um: {{x, y}} spacing between cells
 - default_object: object name for all cells
 - mapping: [[...], [...]] for heterogeneous layouts (row-major, mapping[y][x])
 
@@ -252,15 +268,15 @@ DESIGN RULES:
 3. Use assembly for the overall array layout
 
 FABRICATION RULES (CRITICAL):
-- BOX Dimensions: Must be {x_um: <val>, y_um: <val>, z_um: <val>}
-  - Example X-aligned beam: {x_um: 10, y_um: 2, z_um: 2}
-  - Example Y-aligned beam: {x_um: 2, y_um: 10, z_um: 2}
-  - Example Z-aligned beam: {x_um: 2, y_um: 2, z_um: 10}
+- BOX Dimensions: Must be {{x_um: <val>, y_um: <val>, z_um: <val>}}
+  - Example X-aligned beam: {{x_um: 10, y_um: 2, z_um: 2}}
+  - Example Y-aligned beam: {{x_um: 2, y_um: 10, z_um: 2}}
+  - Example Z-aligned beam: {{x_um: 2, y_um: 2, z_um: 10}}
   - DO NOT EXPECT INFERENCE. You must specify the size in each axis explicitly.
 
-- CYLINDER Dimensions: {diameter_um: <val>, height_um: <val>} (Z-axis aligned)
-- For PYRAMIDS: Include construction: {method: "stacked_boxes", layers: <height_um>}
-- For CONES: Include construction: {method: "stacked_cylinders", layers: <height_um>}
+- CYLINDER Dimensions: {{diameter_um: <val>, height_um: <val>}} (Z-axis aligned)
+- For PYRAMIDS: Include construction: {{method: "stacked_boxes", layers: <height_um>}}
+- For CONES: Include construction: {{method: "stacked_cylinders", layers: <height_um>}}
 
 COORDINATE SYSTEM:
 - All dimensions in micrometers
@@ -277,13 +293,18 @@ Any output that includes:
 is INVALID and will cause immediate failure.
 
 REQUIRED OUTPUT STRUCTURE:
-{
+{{{{
   "job_name": "...",
-  "objects": { ... },
-  "assembly": { ... }
-}
+  "objects": {{{{ ... }}}},
+  "assembly": {{{{ ... }}}}
+}}}}
 
-EXAMPLE OUTPUT:
+OUTPUT EXAMPLE(S):
+{example_output}
+
+Output valid JSON matching the schema. Think hierarchically."""
+
+DEFAULT_EXAMPLE_OUTPUT="""
 {
   "job_name": "nailhead_array",
   "objects": {
@@ -318,8 +339,7 @@ EXAMPLE OUTPUT:
     "default_object": "meta_atom"
   }
 }
-
-Output valid JSON matching the schema. Think hierarchically."""
+"""
 
 
 # ======================================================
@@ -329,11 +349,57 @@ Output valid JSON matching the schema. Think hierarchically."""
 def design_geometry(state: AgentState) -> AgentState:
     """Call LLM to design named object structure."""
     print(f"[DESIGNING] Processing prompt...")
+
+    system_prompt_template = PromptTemplate(input_variables = ["example_output"], template = SYSTEM_PROMPT)
+
+    # Perform vector search for prompt to fetch examples
+    response = client.embeddings.create(model=OPENAI_EMBEDDINGS_MODEL, input=state["prompt"])
+    if qclient:
+        search_results = qclient.query_points(
+            collection_name="prompts",
+            query=response.data[0].embedding,
+            with_payload=True,
+            limit=30 # Return examples liberally to increase the chance of having one successful and one failed example
+        ).points
+        
+        successful_example = None
+        failed_example = None
+        # Try to pick one successful example and one failed example
+        for result in search_results:
+          if result.payload["printable"] == True:
+            successful_example = result.payload
+            break
+        
+        for result in search_results:
+          if result.payload["printable"] == False:
+            failed_example = result.payload
+            break
+              
+        example_text = ""
+        if successful_example: # Include successful example
+            design_json = successful_example["design"]
+            cleaned_json = {"job_name": design_json["job_name"], "objects": design_json["objects"], "assembly": design_json["assembly"]}
+            example_text += f"""\n\nThese are examples of designs that can print successfully:
+            {json.dumps(cleaned_json, indent=2)}"""
+            
+        if failed_example: # Include failed example and failure reasons
+            design_json = failed_example["design"]
+            cleaned_json = {"job_name": design_json["job_name"], "objects": design_json["objects"], "assembly": design_json["assembly"]}
+            example_text += f"""\n\nThese are examples of designs that DO NOT print successfully:
+            {json.dumps(cleaned_json, indent=2)}
+            ISSUES TO AVOID: {failed_example["problems"]}"""
+        if example_text == "":
+            example_text = DEFAULT_EXAMPLE_OUTPUT
+
+        #print(f"[DEBUG] Example Prompts:\n\n{example_text}")
+        formatted_system_prompt = system_prompt_template.format(example_output = example_text)
+    else:
+        formatted_system_prompt = system_prompt_template.format(example_output = DEFAULT_EXAMPLE_OUTPUT)
     
     response = client.chat.completions.create(
-        model="gpt-5-mini",
+        model=OPENAI_MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": formatted_system_prompt},
             {"role": "user", "content": state["prompt"]}
         ],
         response_format={
@@ -458,7 +524,7 @@ def save_output(state: AgentState) -> AgentState:
         "metadata": {
             "category": category,
             "timestamp": timestamp,
-            "model": "gpt-5-mini",
+            "model": OPENAI_MODEL,
             "tokens": state["token_usage"],
             "errors": state["errors"]
         },
@@ -504,6 +570,7 @@ def _run_pipeline(output_dir: Path, state: AgentState):
         import endpoint_generator_v2
         import gwl_serializer
         import render_generator_v2
+        import render_generator
         
         # Find parameters file
         param_file = None
@@ -559,6 +626,10 @@ def _run_pipeline(output_dir: Path, state: AgentState):
             print(f"[PIPELINE V2] Generated Renders: {render_dir.name}/")
         else:
             print(f"[PIPELINE V2] Warning: design.json not found, skipping renders")
+
+        successful_segments, failed_segments = analyze_segments(print_params, gwl_dir, output_dir / "analyzed_segments.json")
+        print(f"[PIPELINE V2] Analyzed segment printability: ")
+        
         
     except Exception as e:
         print(f"[PIPELINE V2] ERROR: {e}")
@@ -648,3 +719,6 @@ if __name__ == "__main__":
     if result['errors']:
         print(f"Errors: {len(result['errors'])}")
     print("=" * 70)
+    
+    if qclient:
+        qclient.close()

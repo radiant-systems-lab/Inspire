@@ -39,6 +39,7 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
     GWL_DIR = gwl_dir
     PRINT_PARAMS = print_params
     OUTPUT_JSON_PATH = output_json_path
+    ALLOWED_OVERLAP_PERCENT = 0.5 # Lower overlap than this will trigger an error on the segment
     
     layer_files = [f.name for f in GWL_DIR.iterdir() if re.search(r"layer_[0-9]+.*\.(?:gwl|GWL)", f.name)]
     sorted_layer_files = sorted(layer_files, key = lambda f: int(re.search(r"layer_([-0-9]+)", f).group(1)))
@@ -55,6 +56,8 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
     
     v_xy = PRINT_PARAMS["voxel_xy_um"]
     v_z = PRINT_PARAMS["voxel_z_um"]
+    hatch_distance_um = PRINT_PARAMS["hatch_distance_um"]
+    MIN_ADHESION_INDEX = (( hatch_distance_um * ALLOWED_OVERLAP_PERCENT) / v_xy )**2
     
     # Initialize two trees for current and previous layers
     current_tree = RTree()
@@ -109,7 +112,7 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
                         layers[z1]["segments"] = []
                     segdict = {"start": [x1, y1], "end": [x2, y2], "base": True}
                     layers[z1]["segments"].append(segdict)
-                    current_tree.insert(coords, segment_rect)
+                    current_tree.insert((coords, None), segment_rect)
                     successful_segments += 1
                     continue
                 
@@ -137,26 +140,39 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
                 # Perform adhesion analysis on all nearby segments and check if there is one with adequate adherence.
                 lowest_adhesion_index = float('inf')
                 closest_segment = None
-                for segment in candidate_segments:  
+                attached_segments = []
+                for segment in candidate_segments: 
+                    seg, seg_err = segment
                     # Find the actual closest point between the two segments to compare
                     mid = [(x2 - x1)/2.0, (y2 - y1)/2.0, (z2 - z1)/2.0]
-                    ox, oy, oz = get_closest_point(segment, mid)
+                    ox, oy, oz = get_closest_point(seg, mid)
                     px, py, pz = get_closest_point(coords, [ox, oy, oz])
                     side_adhesion_index = ((ox - px)/v_xy)**2 + ((oy - py)/v_xy)**2 + ((oz - pz)/v_z)**2      
-    
+                    
+                    if side_adhesion_index <= 1.0:
+                        attached_segments.append(segment)
+                    
                     if side_adhesion_index < lowest_adhesion_index:
                         lowest_adhesion_index = side_adhesion_index
                         closest_segment = segment
+
     
                 # Analyze results
                 error = None
-                if lowest_adhesion_index > 1.0:
+                is_attached_to_any_valid_segment = any(seg[1] is None for seg in attached_segments)
+                if is_attached_to_any_valid_segment == False and len(attached_segments) > 0:
+                    failed_segments += 1
+                    error = "attached_to_failed_segment"
+                elif lowest_adhesion_index < MIN_ADHESION_INDEX:
+                    failed_segments += 1
+                    error = "segment_double_exposure"
+                elif lowest_adhesion_index > 1.0:
                     failed_segments += 1
                     error = "segment_floating"
                     #print(f"[WARNING] Floating segment: ({x1}, {y1}, {z1}), adhesion: {lowest_adhesion_index}") 
                 elif closest_segment is not None:
-                    # Check segment start adhesion
-                    sx, sy, sz = get_closest_point(closest_segment, [x1, y1, z1])
+                    # Check even further - verify segment start adhesion
+                    sx, sy, sz = get_closest_point(closest_segment[0], [x1, y1, z1])
                     start_adhesion_index = ((x1 - sx)/v_xy)**2 + ((y1 - sy)/v_xy)**2 + ((z1 - sz)/v_z)**2
                     if start_adhesion_index > 1.0:
                         failed_segments += 1
@@ -169,7 +185,7 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
                     
                 
                 # Update the current tree and the storage list
-                current_tree.insert(coords, segment_rect)
+                current_tree.insert((coords, error), segment_rect) # Store current segment and any error it contains
     
                 # Add to output dict
                 if not z1 in layers.keys():
