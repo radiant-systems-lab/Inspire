@@ -165,7 +165,8 @@ def expand_derived_primitive(primitive: Dict) -> List[Dict]:
     construction = primitive.get("construction", {})
     method = construction.get("method")
     num_layers = construction.get("layers", 20)
-    
+
+    expanded = None
     if prim_type == "pyramid":
         return _expand_pyramid(primitive, num_layers)
     elif prim_type == "cone":
@@ -297,24 +298,31 @@ def reduce_object(
     
     if object_name not in objects:
         raise ValueError(f"Object not found in library: {object_name}")
-    
+
+    print(object_name)
     obj = objects[object_name]
     obj_type = obj["type"]
     primitives = []
     
     if obj_type == "geometry":
         # Emit primitives with transform applied
-        for component in obj["components"]:
+        for i, component in enumerate(obj["components"]):
             if is_derived_primitive(component):
                 # Expand derived primitives first
                 expanded = expand_derived_primitive(component)
                 for prim in expanded:
                     transformed = apply_transform(prim, transform)
-                    primitives.append(normalize_primitive_dimensions(transformed))
+                    normalized = normalize_primitive_dimensions(transformed)
+                    normalized["object_name"] = object_name
+                    normalized["component_index"] = i
+                    primitives.append(normalized)
             else:
                 # Native primitive - just transform
                 transformed = apply_transform(component, transform)
-                primitives.append(normalize_primitive_dimensions(transformed))
+                normalized = normalize_primitive_dimensions(transformed)
+                normalized["object_name"] = object_name
+                normalized["component_index"] = i
+                primitives.append(normalized)
     
     elif obj_type == "composite":
         # Get referenced object
@@ -352,6 +360,7 @@ def reduce_object(
                     
                     # Recursively reduce the referenced object
                     child_primitives = reduce_object(uses, objects, composed)
+                    child_primitives[-1]["composite_grid_index"] = {"x": ix, "y": iy, "z": iz}
                     primitives.extend(child_primitives)
     
     else:
@@ -436,6 +445,8 @@ def _reduce_grid_assembly(assembly: Dict, objects: Dict) -> List[Dict]:
                     
                     # Reduce this object at this position
                     cell_primitives = reduce_object(obj_name, objects, transform)
+                    for prim in cell_primitives:
+                        prim["assembly_grid_index"] = {"x": ix, "y": iy, "z": iz}
                     primitives.extend(cell_primitives)
     
     return primitives
