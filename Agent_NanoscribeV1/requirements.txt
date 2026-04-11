@@ -9,10 +9,11 @@ langchain-core>=0.3.0
 #langchain-google-genai>=3.2.0
 langchain-openai>=1.1.7
 shapely>=2.1.2
+cadquery
 rtreelib>=0.2.0
 pathos>=0.3.5
 qdrant-client>=1.17.0
-trimesh>=4.11.3
+#trimesh>=4.11.3
 
 # Visualization
 matplotlib>=3.5.0
@@ -25,10 +26,10 @@ jupyter>=1.0.0
 ipython>=8.0.0
 
 # Phoenix tracing
-arize-phoenix>=12.35.0
-openinference_instrumentation_langchain>=0.1.58
-arize>=8.2.0
+#arize-phoenix>=12.35.0
+#openinference_instrumentation_langchain>=0.1.58
+#arize>=8.2.0
 
 # Testing
-pytest>=9.0.2
-pytest-dependency>=0.6.0
+#pytest>=9.0.2
+#pytest-dependency>=0.6.0

@@ -109,7 +109,7 @@ def normalize_primitive_dimensions(primitive: Dict) -> Dict:
         
     dims = primitive['dimensions']
     new_dims = dims.copy()
-    
+  
     # Already normalized?
     if 'x_um' in dims and 'y_um' in dims and 'z_um' in dims:
         return primitive
@@ -203,7 +203,7 @@ def _expand_pyramid(pyramid: Dict, num_layers: int) -> List[Dict]:
                 "type": "box",
                 "center": [center[0], center[1], layer_z],
                 "dimensions": {
-                    "width_um": layer_width,
+                    "width_um": layer_width, # TODO: Shouldn't this be x_um?
                     "depth_um": layer_width,
                     "height_um": layer_height
                 }
@@ -299,7 +299,6 @@ def reduce_object(
     if object_name not in objects:
         raise ValueError(f"Object not found in library: {object_name}")
 
-    print(object_name)
     obj = objects[object_name]
     obj_type = obj["type"]
     primitives = []

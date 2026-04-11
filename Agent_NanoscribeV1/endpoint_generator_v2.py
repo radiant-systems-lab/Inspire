@@ -28,7 +28,7 @@ def load_print_parameters(param_file: Path) -> Dict[str, float]:
     with open(param_file, 'r') as f:
         for line in f:
             line = line.strip()
-            if ':' in line:
+            if ':' in line and not line.startswith("#"):
                 key, value = line.split(':', 1)
                 params[key.strip()] = float(value.strip())
     return params
@@ -56,17 +56,9 @@ def get_primitive_shapely_geom(primitive: Dict) -> Optional[Polygon]:
     if prim_type == 'box':
         # Primitives are now normalized by Reduction Engine to use x_um, y_um, z_um
         # Fallback logic remains only for safety/legacy partial updates
-        dx = dims.get('x_um', dims.get('length_um', dims.get('width_um', 0)))
-        dy = dims.get('y_um', dims.get('width_um', dims.get('depth_um', 0)))
+        dx = dims.get('x_um', dims.get('width_um', dims.get('width_um', None)))
+        dy = dims.get('y_um', dims.get('depth_um', dims.get('depth_um', None)))
         
-        # Determine strict disambiguation if not normalized (should not happen with new reducer)
-        if 'x_um' not in dims:
-             if 'length_um' in dims and 'width_um' in dims:
-                dx = dims['length_um']
-                dy = dims['width_um']
-             elif 'width_um' in dims and 'depth_um' in dims:
-                dx = dims['width_um']
-                dy = dims['depth_um']
 
         # Create centered box at (0,0)
         poly = box(-dx/2, -dy/2, dx/2, dy/2)
@@ -175,7 +167,7 @@ def generate_layers_shapely(
     
     for prim in primitives:
         center_z = prim['center'][2]
-        height = prim['dimensions'].get('height_um', 0)
+        height = prim['dimensions'].get('height_um', prim['dimensions'].get('z_um', 0))
         z_min = min(z_min, center_z - height/2)
         z_max = max(z_max, center_z + height/2)
         
@@ -192,7 +184,7 @@ def generate_layers_shapely(
     
     while z <= z_max + 1e-9:
         z_round = round(z, 6)
-        
+      
         # Skip slices completely below the object (due to floor snapping)
         if z_round < z_min - 1e-9:
             z += slice_distance

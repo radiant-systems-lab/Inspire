@@ -98,14 +98,18 @@ def associate_segments_with_solids(segments: dict, solids: list, bbox_tol = 0.01
     p = rtree.index.Property()
     p.dimension = 3
     p.interleaved = True
-    idx3d = rtree.index.Index(properties = p)
     segment_id = 0
 
     solid_list = list(solids)
-    for index, solid in enumerate(solid_list):
-        solid_bbox = solid.BoundingBox()
-        idx3d.insert(index, [solid_bbox.xmin, solid_bbox.ymin, solid_bbox.zmin, solid_bbox.xmax, solid_bbox.ymax, solid_bbox.zmax])
 
+    def get_bbox_dims(solid):
+        solid_bbox = solid.BoundingBox()
+        return [solid_bbox.xmin, solid_bbox.ymin, solid_bbox.zmin, solid_bbox.xmax, solid_bbox.ymax, solid_bbox.zmax]
+
+    # Passing a generator instead of inserting each item one by one uses the STR bulk loading algorithm for increased efficiency.
+    indices_to_solids_gen = ((i, get_bbox_dims(solid), None) for i, solid in enumerate(solid_list))
+    idx3d = rtree.index.Index(indices_to_solids_gen, properties = p)
+    
     # Find segments that intersect shapes, and associate them with their closest shape
     results = {}
     results.setdefault("solids_to_segments", {})
@@ -163,7 +167,6 @@ def associate_segments_with_solids(segments: dict, solids: list, bbox_tol = 0.01
 def count_errors_in_named_object_components(solids_to_segments: dict, reduced: dict, translated_solids: list):
     result = {}
     for primitive, solid in zip(reduced["primitives"], translated_solids):
-        print(type(primitive))
         if not solid in solids_to_segments.keys():
             continue
         
@@ -180,12 +183,12 @@ def count_errors_in_named_object_components(solids_to_segments: dict, reduced: d
             result.setdefault(primitive["object_name"], []).append({"component_index": primitive["component_index"], "error_counts": error_counts, "total_segments": len(solids_to_segments[solid])})
     return result
 
-def blame_design(reduced: dict, segments: dict, design: dict = None):
+def blame_design(reduced: dict, segments: dict, design: dict = None, bbox_tol = 0.01):
     print("[PIPELINE] Translating to CadQuery...")
     cq_workplane, translated_solids = translate_reduced_primitives_to_cadquery(reduced, include_shape_mapping = True)
     print("[PIPELINE] Associating segments with solids...")
     translated_solids = cq_workplane.solids().vals()
-    association_data = associate_segments_with_solids(segments, translated_solids)
+    association_data = associate_segments_with_solids(segments, translated_solids, bbox_tol = bbox_tol)
     print("[PIPELINE] Analyzing data...")
     error_data = count_errors_in_named_object_components(association_data["solids_to_segments"], reduced, translated_solids)
     if not design: return error_data
@@ -214,7 +217,7 @@ def main():
         with open(sys.argv[3], 'r') as file:
             design = json.load(file)
 
-    blamed_design = blame_design(reduced, segments, design)
+    blamed_design = blame_design(reduced, segments, design, bbox_tol = 0.01)
 
     pprint(blamed_design, indent = 2)
     return blamed_design

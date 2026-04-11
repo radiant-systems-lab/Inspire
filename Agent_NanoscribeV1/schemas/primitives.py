@@ -136,6 +136,16 @@ def validate_primitive(primitive: Dict) -> List[str]:
     if not isinstance(center, list) or len(center) != 3:
         errors.append("Center must be [x, y, z] array")
     
+  # Validation checks for primitive types
+    if type == "box" and not (isinstance(dimensions, dict) and "x_um" in dimensions and "y_um" in dimensions and "z_um" in dimensions):
+        errors.append(f'{type} dimensions must be a dictionary containing keys "x_um", "y_um", and "z_um"')
+    
+    elif type == "pyramid" and not (isinstance(dimensions, dict) and ("base_width_um" in dimensions or "width_um" in dimensions) and "height_um" in dimensions):
+        errors.append(f'{type} dimensions must be a dictionary containing keys "height_um" and either "base_width_um" or "width_um"')
+    
+    elif type == "cone" or type == "tapered_cylinder" and not (isinstance(dimensions, dict) and ("base_diameter_um" in dimensions or "diameter_um" in dimensions) and "height_um" in dimensions):
+        errors.append(f'{type} dimensions must be a dictionary containing keys "height_um" and either "base_diameter_um" or "diameter_um"')
+    
     # Check derived primitives have construction metadata
     if primitive["type"] in DERIVED_PRIMITIVE_TYPES:
         if "construction" not in primitive:

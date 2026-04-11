@@ -53,15 +53,15 @@ def compute_primitive_aabb(primitive: Dict) -> Dict:
     # Compute half-extents based on geometry type
     if prim_type == 'box':
         # Get dimensions (handle length/width/height mapping + rotation)
-        dx = dims.get('length_um', dims.get('width_um', 1)) / 2
-        dy = dims.get('width_um', dims.get('depth_um', 1)) / 2
+        dx = dims.get('length_um', dims.get('width_um', dims.get('x_um'))) / 2
+        dy = dims.get('width_um', dims.get('depth_um', dims.get('y_um'))) / 2
         # Check if we should use depth_um if length_um was used for X
         if 'length_um' in dims and 'width_um' in dims:
             dy = dims.get('width_um') / 2
         elif 'length_um' in dims and 'depth_um' in dims:
              dy = dims.get('depth_um') / 2
 
-        dz = dims.get('height_um', 1) / 2
+        dz = dims.get('height_um', dims.get('z_um')) / 2
         
         # Apply rotation to X/Y extents
         rot_deg = primitive.get('rotation_z_deg', 0)
@@ -238,8 +238,8 @@ def render_side_yz(primitives: List[Dict], title: str, output_path: Path):
 # ======================================================
 # OBJECT-AWARE RENDERING
 # ======================================================
-
-def generate_object_aware_renders(design: Dict, output_dir: Path, print_params_file: Path) -> Dict[str, List[Path]]:
+# Note: argument unused
+def generate_object_aware_renders(design: Dict, output_dir: Path, print_params_file: Path = None) -> Dict[str, List[Path]]:
     """
     Generate renders for each object + final assembly.
     

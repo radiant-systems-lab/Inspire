@@ -28,7 +28,7 @@ def get_closest_point(segment: list, target_point: list):
     px, py, pz = (x1 + dx * t, y1 + dy * t, z1 + dz * t) # Final closest point to target point along segment
     return (px, py, pz)
 
-def segments_generator(GWL_DIR):
+def gwl_dir_segments_generator(GWL_DIR):
     layer_files = [f.name for f in GWL_DIR.iterdir() if re.search(r"layer_[0-9]+.*\.(?:gwl|GWL)", f.name)]
     sorted_layer_files = sorted(layer_files, key = lambda f: int(re.search(r"layer_([-0-9]+)", f).group(1)))
 
@@ -48,11 +48,11 @@ def sort_two(a, b):
     else:
         return (a, b)
 
-def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
-    GWL_DIR = gwl_dir
+# Accepts print parameters as JSON, segments generator is a generator function that yields coordinates, each a list as:
+# [x1, y1, z1, x2, y2, z2]
+def analyze_segments(print_params, segments_generator, allowed_overlap_percent = 0.5):
     PRINT_PARAMS = print_params
-    OUTPUT_JSON_PATH = output_json_path
-    ALLOWED_OVERLAP_PERCENT = 0.5 # Lower overlap than this will trigger an error on the segment
+    ALLOWED_OVERLAP_PERCENT = allowed_overlap_percent # Lower overlap than this will trigger an error on the segment
     
     layers = {}
     
@@ -75,8 +75,8 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
     p.dimension = 3
     p.interleaved = True
 
-    # Load entire tree into one using STR bulk-loading algorithm
-    segments = list(segments_generator(GWL_DIR))
+    # Load entire tree as one using STR bulk-loading algorithm
+    segments = list(segments_generator)
     entries_gen = ((i, coords, None) for i, coords in enumerate(segments))
     idx3d = rtree.index.Index(entries_gen, properties = p)
 
@@ -157,8 +157,8 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
 
         # Analyze results
         error = None
-        is_attached_to_any_valid_segment = any(seg in errored_segment_ids for seg in attached_segment_ids)
-        if is_attached_to_any_valid_segment == False and len(attached_segment_ids) > 0:
+        is_touching_only_failures = len(attached_segment_ids) > 0 and all(seg_id in errored_segment_ids for seg_id in attached_segment_ids)
+        if is_touching_only_failures == False and len(attached_segment_ids) > 0:
             failed_segments += 1
             error = "attached_to_failed_segment"
         elif lowest_adhesion_index < MIN_ADHESION_INDEX:
@@ -182,7 +182,7 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
             successful_segments += 1
 
         if error is not None:
-            errored_segment_ids.add(closest_segment_id)
+            errored_segment_ids.add(index)
 
         # Add to output dict
         if not z1 in layers.keys():
@@ -200,14 +200,14 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
         
         
     # Reformat layers dict to output dict
-    search = re.search(r"(.*f)_master.(?:gwl|GWL)", '\n'.join(f.name for f in GWL_DIR.iterdir()))
-    job_name = None
-    if search is not None:
-      job_name = search.group(1)
-    if not job_name:
-       job_name = "unknown"
+    #search = re.search(r"(.*f)_master.(?:gwl|GWL)", '\n'.join(f.name for f in GWL_DIR.iterdir()))
+    #job_name = None
+    #if search is not None:
+    #  job_name = search.group(1)
+    #if not job_name:
+    #   job_name = "unknown"
     segments_dict = {
-      "job_name": job_name,
+     # "job_name": job_name,
       "successful_segments": successful_segments,
       "failed_segments": failed_segments,
       "layers": [{"z_um": k, "segments": v["segments"]} for k, v in layers.items()]
@@ -215,11 +215,8 @@ def analyze_segments(print_params, gwl_dir: Path, output_json_path: Path):
     
     print(f"Failed Segments: {failed_segments}")
     print(f"Successful Segments: {successful_segments}")
-    
-    with open(OUTPUT_JSON_PATH, 'w') as file:
-        json.dump(segments_dict, file, indent = 2)
         
-    return (successful_segments, failed_segments)
+    return segments_dict
 
 
 if __name__ == "__main__":
@@ -232,4 +229,7 @@ if __name__ == "__main__":
     assert print_params_path.is_file()
     assert gwl_dir_path.is_dir()
     assert output_json_path.parent.is_dir()
-    analyze_segments(load_print_parameters(print_params_path), gwl_dir_path, output_json_path)
+    segments_generator = gwl_dir_segments_generator(gwl_dir_path)
+    segments_dict = analyze_segments(load_print_parameters(print_params_path), segments_generator)
+    with open(output_json_path, 'w') as file:
+        json.dump(segments_dict, file, indent = 2)
