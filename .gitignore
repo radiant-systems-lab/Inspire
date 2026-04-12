@@ -1,0 +1,20 @@
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime artifacts
+output/
+logs/
+agent_workspace/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local env
+.env
+
+# Labeling render caches (regeneratable)
+**/temp_validation_renders/

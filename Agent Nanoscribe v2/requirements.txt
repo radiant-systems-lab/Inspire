@@ -1,0 +1,9 @@
+cadquery
+numpy
+pandas
+trimesh
+matplotlib
+seaborn
+streamlit
+python-dotenv
+scikit-learn

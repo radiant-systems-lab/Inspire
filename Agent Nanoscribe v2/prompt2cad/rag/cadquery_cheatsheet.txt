@@ -1,0 +1,148 @@
+                                                   Cheatsheet
+                                A Quick Guide To The Most Commonly Used Functions!
+                                Full API reference | Examples | Install CQ-Editor |  Mode
+
+         3D Construction
+       Primitives           Additive    Subtractive     rect
+          box               extrude       cutBlind    (xLen, yLen)
+(length, width,    height)  (until)       (until)      center
+         sphere             revolve      cutThruAll    (x,   y)
+
+       (radius)          (angleDegrees)      ()        lineTo
+        cylinder              loft          hole    (x,      y)
+(height, radius)            (ruled)      (diameter,    vLine
+                                           depth)
+                             sweep                   (distance)
+(txt,    text                (path,        shell
+       fontsize, distance)  isFrenet,   (thickness)      rect
+                        transitionMode)
+^      quickly perform ^                   fillet    (w,     h)
++/-/&  boolean ops with                   (radius)    trapezoid
+(...,  combine="a/s/i")                   chamfer    (w, h, a1)
+         or use                           (length)      fillet
+union/cut/intersect(shape)
+                                                         (d)
+2D Construction
+   circle      ellipse
+   (radius)    (x_radius,
+   moveTo      y_radius)
+   (x, y)      move
+               (xDist, yDist)
+       line    polarLine
+   (xDist, yDist)  (distance, angle)
+   hLine           polyline
+
+   (distance)      (listOfXYTuple)
+   Sketching
+       circle      ellipse
+
+       (r)         (a1, a2)
+   regularPolygon  polygon
+       (r, n)       (pts)
+   chamfer         finalize
+
+       (d)            ()
+
+           Import/Export
+    importers.importDXF        importers.importStep
+    (path, tol)                           ("path")
+    exporters.export           Where ***  can be: svg, step,
+    (solid, "path/solid.***")  stl, amf, vrml,    json
+
+           Assemblies
+       Assembly                            add
+          ()                         (obj,    loc, color)
+      constrain                           solve
+        (***)                               ()
+         save                        Where    *** can be:
+("path/assembly.***")                step,     xml, gltf,
+                                          vtkjs,  vrml
+
+      Selector String Modifiers
+Axis Strings are: X, Y, Z, XY, YZ, XZ
+  Mod                   Description
+   |    Parallel to = ParallelDirSelector
+   #    Perpendicular to = PerpendicularDirSelector
+  +/-      Pos/Neg direction = DirectionSelector
+   >                       Max =
+    DirectionMinMaxSelector(directionMax=True)
+   <                       Min =
+        DirectionMinMaxSelector(directionMax=False)
+   %         Curve/surface type = TypeSelector
+    Eg: select the top face (> in Z direction) = .faces(">Z")
+
+---
+
+                        Selector Methods
+CadQuery selector strings and classes allow filtering to select
+                            objects.
+ Selector Methods             Selector Classes
+ faces(selector)        NearestToPointSelector(pnt)
+ edges(selector)        ParallelDirSelector(vector)
+vertices(selector)    PerpendicularDirSelector(vector)
+ solids(selector)     DirectionMinMaxSelector(vector)
+ shells(selector)           RadiusNthSelector(n)
+                      AndSelector(selector, selector)
+                      SumSelector(selector, selector)
+                    SubtractSelector(selector, selector)
+                         InverseSelector(selector)
+
+             Workplane Positioning                                               Named Planes
+
+    translate  rotateAboutCenter                   rotate    Direction references refer to the global directions.
+    (Vector(x, y,  (Vector(x,     y, z),       (Vector(x,     y,    Name    xDir    yDir    zDir
+                                               z), Vector(x,
+    z))          angleDegrees)                     y, z),            XY      +x      +y      +z
+
+    Position a workplane relative to an existing angleDegrees)       YZ      +y      +z      +x
+                   .workplane(offset, origin)  feature with:         XZ      +x      +z      -y
+    sets the   offset perpendicular   to the current plane         front     +x      +y      +z
+    sets the   origin relative to (0,0) on the current plane
+                                                                    back     -x      +y      -z
+                                                                    left     +z      +y      -x
+                                                                   right     -z      +y      +x
+                                                                    top      +x      -z      +y
+                                                                   bottom    +x      +z      -y
+
+                                   Examples of Filtering Faces
+  All types of filters work on faces. In most cases, the selector refers to the direction of the
+normal vector of the face. If a face is not planar, selectors are evaluated at the center of mass
+                 of the face. This can lead to results that are quite unexpected.
+
+    Selector    Selector Class                      Selects    # Objects
+                                                                             Returned
+   +Z         DirectionSelector        Faces with normal in +z direction     0..many
+   |Z        ParallelDirSelector           Faces parallel to xy plane        0..many
+   -X         DirectionSelector            Faces with normal in neg x        0..many
+                                                   direction
+   #Z      PerpendicularDirSelector    Faces perpendicular to z direction    0..many
+ %Plane          TypeSelector                 Faces of type plane            0..many
+   >Y      DirectionMinMaxSelector    Face farthest in the positive y dir     0 or 1
+   <Y      DirectionMinMaxSelector    Face farthest in the negative y dir     0 or 1
+
+                                 Examples of Filtering Edges
+Some filter types are not supported for edges. The selector usually refers to the direction of
+  the edge. Non-linear edges are not selected for any selectors except type (%). Non-linear
+                   edges are never returned when these filters are applied.
+
+---
+
+    Selector    Selector Class                      Selects    # Objects
+                                                                             Returned
+   +Z         DirectionSelector         Edges aligned in the Z direction     0..many
+   |Z        ParallelDirSelector         Edges parallel to z direction       0..many
+   -X         DirectionSelector         Edges aligned in neg x direction     0..many
+   #Z      PerpendicularDirSelector    Edges perpendicular to z direction    0..many
+ %Plane          TypeSelector                   Edges type line              0..many
+   >Y      DirectionMinMaxSelector    Edges farthest in the positive y dir    0 or 1
+   <Y      DirectionMinMaxSelector      Edges farthest in the negative y      0 or 1
+                                                      dir
+
+                                  Examples of Filtering Vertices
+Only a few of the filter types apply to vertices. The location of the vertex is the subject of the
+                                             filter.
+Selector      Selector Class                    Selects
+   >Y    DirectionMinMaxSelector    Vertices farthest in the +Y dir
+   <Y    DirectionMinMaxSelector    Vertices farthest in the -Y dir
+>>Y[-2]     CenterNthSelector      2nd farthest vertex in the +Y dir
+ <<Y[0]     CenterNthSelector       1st closest vertex in the Y dir
